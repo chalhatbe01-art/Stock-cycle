@@ -15,38 +15,40 @@ FILE_PATH = "stock_cycles.xlsx"
 
 @st.cache_data(ttl=3600)
 def fetch_fundamental_data(symbol):
-    """Fetches data and handles errors if the symbol is wrong."""
+    """Fetches data and returns ONLY simple dictionary data to prevent caching errors."""
     try:
-        ticker = yf.Ticker(f"{symbol}.NS")
+        ticker_str = f"{symbol}.NS"
+        ticker = yf.Ticker(ticker_str)
         hist = ticker.history(period="10d")
         
         if hist.empty:
-            ticker = yf.Ticker(f"{symbol}.BO")
+            ticker_str = f"{symbol}.BO"
+            ticker = yf.Ticker(ticker_str)
             hist = ticker.history(period="10d")
             
         if hist.empty:
-            return None, None
+            return None
             
         info = ticker.info
         avg_vol_1w = hist['Volume'].tail(5).mean() if len(hist) >= 5 else hist['Volume'].mean()
         
         fundamentals = {
-            "Company Name": info.get('longName', symbol), # Fetches the actual name!
+            "Company Name": info.get('longName', symbol),
             "CMP": hist['Close'].iloc[-1],
             "Market Cap (Cr)": info.get('marketCap', 0) / 10000000 if info.get('marketCap') else "N/A",
             "Volume": hist['Volume'].iloc[-1],
             "1-Week Avg Volume": avg_vol_1w,
             "P/E Ratio": info.get('trailingPE', "N/A"),
-            "EV/EBITDA": info.get('enterpriseToEbitda', "N/A")
+            "EV/EBITDA": info.get('enterpriseToEbitda', "N/A"),
+            "Ticker String": ticker_str
         }
-        return fundamentals, ticker
+        return fundamentals
     except Exception:
-        return None, None
+        return None
 
 def get_active_anniversary(ref_date_str):
     """Takes ANY date format (12-08-2020, 12-Aug-2020) and forces it to the most recent anniversary."""
     try:
-        # Pandas is incredibly smart at reading any date format you type
         orig_date = pd.to_datetime(ref_date_str).to_pydatetime()
     except Exception:
         orig_date = datetime(2020, 1, 1)
@@ -122,7 +124,7 @@ with tab2:
     st.markdown("---")
     
     st.markdown("### ✏️ Manual Editor")
-    st.markdown("**CRITICAL:** You must press **Enter** on your keyboard after typing a word before clicking Save!")
+    st.markdown("**NOTE:** Always press **Enter** on your keyboard after typing inside a box before clicking Save!")
     edited_df = st.data_editor(st.session_state.cycles_df, num_rows="dynamic", use_container_width=True)
     
     if st.button("💾 Save Manual Changes", type="primary"):
@@ -152,12 +154,15 @@ with tab1:
             status_text.text(f"Fetching data for {sym} ({c_name})...")
             progress_bar.progress((index + 1) / len(df))
             
-            fundamentals, ticker = fetch_fundamental_data(sym)
+            fundamentals = fetch_fundamental_data(sym)
             
             if fundamentals is None: 
                 continue 
                 
+            # Recreate ticker object safely outside the cached function
+            ticker = yf.Ticker(fundamentals["Ticker String"])
             cmp = fundamentals["CMP"]
+            
             active_target_date = get_active_anniversary(row['Reference Date'])
             ref_data, actual_trading_date = get_actual_trading_date_and_data(ticker, active_target_date)
             
@@ -207,7 +212,6 @@ with tab1:
             filtered_df = results_df.copy()
             if search_term:
                 clean_search = search_term.upper()
-                # Allows searching by either the ticker symbol OR the new Company Name
                 filtered_df = filtered_df[
                     filtered_df["Symbol"].str.contains(clean_search, na=False) | 
                     filtered_df["Company Name"].str.upper().str.contains(clean_search, na=False)
@@ -230,4 +234,4 @@ with tab1:
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 results_df.to_excel(writer, index=False, sheet_name='Cycles_Analysis')
-            st.download_button("📥 Download Analysis as Excel", data=output.getvalue(), file_name="cycle_analysis.xlsx")
+            st.download_button("📥 Download Analysis as Excel", data=output.getvalue(), file_name="cycle_analysis.xlsx"
