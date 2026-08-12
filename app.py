@@ -13,24 +13,63 @@ FILE_PATH = "stock_cycles.xlsx"
 
 # --- HELPER FUNCTIONS ---
 
+def format_indian_num(val):
+    """Formats numbers into Indian numbering style with exactly 1 decimal (e.g., 1,23,456.7)."""
+    if val is None or val == "N/A" or pd.isna(val):
+        return "N/A"
+    try:
+        val_float = float(val)
+        s = f"{val_float:.1f}" # Enforce 1 decimal place
+        parts = s.split('.')
+        int_str = parts[0]
+        dec_str = parts[1]
+        
+        is_negative = int_str.startswith('-')
+        if is_negative:
+            int_str = int_str[1:]
+        
+        if len(int_str) <= 3:
+            formatted_int = int_str
+        else:
+            last_three = int_str[-3:]
+            other_digits = int_str[:-3]
+            res = ""
+            while len(other_digits) > 2:
+                res = "," + other_digits[-2:] + res
+                other_digits = other_digits[:-2]
+            formatted_int = other_digits + res + "," + last_three
+        
+        if is_negative:
+            formatted_int = "-" + formatted_int
+            
+        return f"{formatted_int}.{dec_str}"
+    except Exception:
+        return str(val)
+
 @st.cache_data(ttl=3600)
 def fetch_fundamental_data(symbol):
-    """Fetches data and returns ONLY simple dictionary data to prevent caching errors."""
+    """Fetches CMP, Market Cap, Volumes, and 1-Year Trend Data."""
     try:
         ticker_str = f"{symbol}.NS"
         ticker = yf.Ticker(ticker_str)
-        hist = ticker.history(period="10d")
+        
+        # auto_adjust=False forces Yahoo to return the rawest data possible without dividend distortions
+        hist = ticker.history(period="10d", auto_adjust=False)
         
         if hist.empty:
             ticker_str = f"{symbol}.BO"
             ticker = yf.Ticker(ticker_str)
-            hist = ticker.history(period="10d")
+            hist = ticker.history(period="10d", auto_adjust=False)
             
         if hist.empty:
             return None
             
         info = ticker.info
         avg_vol_1w = hist['Volume'].tail(5).mean() if len(hist) >= 5 else hist['Volume'].mean()
+        
+        # Fetch 1 year of data for the tiny Google-style line chart
+        hist_1y = ticker.history(period="1y", auto_adjust=False)
+        chart_data = hist_1y['Close'].tolist() if not hist_1y.empty else []
         
         fundamentals = {
             "Company Name": info.get('longName', symbol),
@@ -40,14 +79,14 @@ def fetch_fundamental_data(symbol):
             "1-Week Avg Volume": avg_vol_1w,
             "P/E Ratio": info.get('trailingPE', "N/A"),
             "EV/EBITDA": info.get('enterpriseToEbitda', "N/A"),
-            "Ticker String": ticker_str
+            "Ticker String": ticker_str,
+            "Trend (1Y)": chart_data
         }
         return fundamentals
     except Exception:
         return None
 
 def get_active_anniversary(ref_date_str):
-    """Takes ANY date format (12-08-2020, 12-Aug-2020) and forces it to the most recent anniversary."""
     try:
         orig_date = pd.to_datetime(ref_date_str).to_pydatetime()
     except Exception:
@@ -67,7 +106,8 @@ def get_active_anniversary(ref_date_str):
 
 def get_actual_trading_date_and_data(ticker, target_date):
     end_date = target_date + timedelta(days=10)
-    hist = ticker.history(start=target_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'))
+    # Using timezone-aware fetching to prevent cross-day shifting in Yahoo Finance
+    hist = ticker.history(start=target_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'), auto_adjust=False)
     if not hist.empty:
         actual_date = hist.index[0].tz_localize(None) 
         return hist.iloc[0], actual_date
@@ -75,7 +115,6 @@ def get_actual_trading_date_and_data(ticker, target_date):
 
 def get_offset_data(ticker, base_date, days_offset):
     target = base_date + timedelta(days=days_offset)
-    
     if target.date() > datetime.now().date():
         return f"Pending ({target.strftime('%d-%b')})"
         
@@ -124,7 +163,7 @@ with tab2:
     st.markdown("---")
     
     st.markdown("### ✏️ Manual Editor")
-    st.markdown("**NOTE:** Always press **Enter** on your keyboard after typing inside a box before clicking Save!")
+    st.markdown("**NOTE:** Always press **Enter** on your keyboard after typing inside a cell before clicking Save!")
     edited_df = st.data_editor(st.session_state.cycles_df, num_rows="dynamic", use_container_width=True)
     
     if st.button("💾 Save Manual Changes", type="primary"):
@@ -155,11 +194,8 @@ with tab1:
             progress_bar.progress((index + 1) / len(df))
             
             fundamentals = fetch_fundamental_data(sym)
-            
-            if fundamentals is None: 
-                continue 
+            if fundamentals is None: continue 
                 
-            # Recreate ticker object safely outside the cached function
             ticker = yf.Ticker(fundamentals["Ticker String"])
             cmp = fundamentals["CMP"]
             
@@ -171,14 +207,10 @@ with tab1:
                 ref_low = ref_data['Low']
                 pct_change = ((cmp - ref_high) / ref_high) * 100
                 
-                plus_30 = get_offset_data(ticker, actual_trading_date, 30)
-                plus_60 = get_offset_data(ticker, actual_trading_date, 60)
-                plus_90 = get_offset_data(ticker, actual_trading_date, 90)
-                plus_120 = get_offset_data(ticker, actual_trading_date, 120)
-                
                 results.append({
                     "Symbol": sym,
                     "Company Name": fundamentals["Company Name"],
+                    "Trend (1Y)": fundamentals["Trend (1Y)"], # This triggers the mini chart
                     "Cycle Name": c_name,
                     "Latest Ref Date": actual_trading_date.strftime("%d-%b-%Y"),
                     "Ref High": round(ref_high, 2),
@@ -186,12 +218,8 @@ with tab1:
                     "CMP": round(cmp, 2),
                     "% Change": round(pct_change, 2),
                     "Bucket": get_bucket(pct_change),
-                    "+30 Days": plus_30,
-                    "+60 Days": plus_60,
-                    "+90 Days": plus_90,
-                    "+120 Days": plus_120,
-                    "Market Cap (Cr)": round(fundamentals["Market Cap (Cr)"], 2) if isinstance(fundamentals["Market Cap (Cr)"], float) else fundamentals["Market Cap (Cr)"],
-                    "1W Avg Vol": int(fundamentals["1-Week Avg Volume"]),
+                    "Market Cap (Cr)": format_indian_num(fundamentals["Market Cap (Cr)"]),
+                    "1W Avg Vol": format_indian_num(fundamentals["1-Week Avg Volume"]),
                     "P/E": round(fundamentals["P/E Ratio"], 2) if isinstance(fundamentals["P/E Ratio"], float) else fundamentals["P/E Ratio"],
                 })
 
@@ -219,19 +247,51 @@ with tab1:
             if cycle_filter:
                 filtered_df = filtered_df[filtered_df["Cycle Name"].isin(cycle_filter)]
                 
+            # Render the Dataframe with the specific LineChart integration
             st.dataframe(
-                filtered_df.style.format({
-                    "Ref High": "{:.2f}",
-                    "Ref Low": "{:.2f}",
-                    "CMP": "{:.2f}",
-                    "% Change": "{:.2f}%"
-                }),
+                filtered_df,
+                column_config={
+                    "Trend (1Y)": st.column_config.LineChartColumn(
+                        "1 Year Trend", # Displays the Google-style mini chart inside the table
+                        width="medium",
+                        help="Historical closing prices over the last 1 year"
+                    ),
+                    "Ref High": st.column_config.NumberColumn(format="%.2f"),
+                    "Ref Low": st.column_config.NumberColumn(format="%.2f"),
+                    "CMP": st.column_config.NumberColumn(format="%.2f"),
+                    "% Change": st.column_config.NumberColumn(format="%.2f%%"),
+                },
                 use_container_width=True,
-                height=500
+                height=450
             )
             
+            # --- GOOGLE-STYLE LARGE INTERACTIVE CHART ---
+            st.markdown("---")
+            st.subheader("📈 Interactive Stock Chart")
+            
+            chart_col1, chart_col2 = st.columns([2, 1])
+            with chart_col1:
+                selected_stock = st.selectbox("Select Stock to View Large Chart:", results_df["Symbol"].unique())
+            with chart_col2:
+                timeframe = st.radio("Timeframe:", ["1M", "6M", "1Y", "5Y", "Max"], horizontal=True, index=2)
+
+            tf_map = {"1M": "1mo", "6M": "6mo", "1Y": "1y", "5Y": "5y", "Max": "max"}
+            
+            chart_ticker = yf.Ticker(f"{selected_stock}.NS")
+            chart_hist = chart_ticker.history(period=tf_map[timeframe], auto_adjust=False)
+            if chart_hist.empty:
+                chart_ticker = yf.Ticker(f"{selected_stock}.BO")
+                chart_hist = chart_ticker.history(period=tf_map[timeframe], auto_adjust=False)
+
+            if not chart_hist.empty:
+                st.line_chart(chart_hist['Close'])
+            else:
+                st.warning("Chart data unavailable for this stock.")
+
+            # Excel Download (Excludes the Chart Data column so Excel doesn't break)
             st.markdown("---")
             output = io.BytesIO()
+            excel_export_df = results_df.drop(columns=["Trend (1Y)"]) 
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                results_df.to_excel(writer, index=False, sheet_name='Cycles_Analysis')
+                excel_export_df.to_excel(writer, index=False, sheet_name='Cycles_Analysis')
             st.download_button("📥 Download Analysis as Excel", data=output.getvalue(), file_name="cycle_analysis.xlsx")
