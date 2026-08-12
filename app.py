@@ -234,4 +234,4 @@ with tab1:
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 results_df.to_excel(writer, index=False, sheet_name='Cycles_Analysis')
-            st.download_button("📥 Download Analysis as Excel", data=output.getvalue(), file_name="cycle_analysis.xlsx"
+            st.download_button("📥 Download Analysis as Excel", data=output.getvalue(), file_name="cycle_analysis.xlsx")
